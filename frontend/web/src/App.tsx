@@ -5,19 +5,26 @@ import { getContractReadOnly, getContractWithSigner } from "./components/useCont
 import "./App.css";
 import { useAccount } from 'wagmi';
 import { useFhevm, useEncrypt, useDecrypt } from '../fhevm-sdk/src';
+import { ethers } from 'ethers';
 
 interface TrialData {
   id: string;
   name: string;
   age: number;
-  condition: string;
-  treatment: string;
-  timestamp: number;
+  conditionScore: number;
+  treatmentPhase: number;
+  description: string;
   creator: string;
-  publicValue1: number;
-  publicValue2: number;
+  timestamp: number;
   isVerified?: boolean;
   decryptedValue?: number;
+}
+
+interface TrialStats {
+  totalTrials: number;
+  verifiedPatients: number;
+  avgCondition: number;
+  activeTrials: number;
 }
 
 const App: React.FC = () => {
@@ -32,19 +39,15 @@ const App: React.FC = () => {
     status: "pending", 
     message: "" 
   });
-  const [newTrialData, setNewTrialData] = useState({ 
-    name: "", 
-    age: "", 
-    condition: "", 
-    treatment: "" 
-  });
+  const [newTrialData, setNewTrialData] = useState({ name: "", age: "", condition: "", phase: "", description: "" });
   const [selectedTrial, setSelectedTrial] = useState<TrialData | null>(null);
+  const [isDecrypting, setIsDecrypting] = useState(false);
   const [contractAddress, setContractAddress] = useState("");
   const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [stats, setStats] = useState({ total: 0, verified: 0, avgAge: 0 });
+  const [activeTab, setActiveTab] = useState("trials");
 
-  const { initialize, isInitialized } = useFhevm();
+  const { status, initialize, isInitialized } = useFhevm();
   const { encrypt, isEncrypting } = useEncrypt();
   const { verifyDecryption, isDecrypting: fheIsDecrypting } = useDecrypt();
 
@@ -109,36 +112,26 @@ const App: React.FC = () => {
             id: businessId,
             name: businessData.name,
             age: Number(businessData.publicValue1) || 0,
-            condition: businessData.description,
-            treatment: "Experimental Treatment",
+            conditionScore: Number(businessData.publicValue2) || 0,
+            treatmentPhase: 0,
+            description: businessData.description,
             timestamp: Number(businessData.timestamp),
             creator: businessData.creator,
-            publicValue1: Number(businessData.publicValue1) || 0,
-            publicValue2: Number(businessData.publicValue2) || 0,
             isVerified: businessData.isVerified,
             decryptedValue: Number(businessData.decryptedValue) || 0
           });
         } catch (e) {
-          console.error('Error loading business data:', e);
+          console.error('Error loading trial data:', e);
         }
       }
       
       setTrials(trialsList);
-      updateStats(trialsList);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
       setIsRefreshing(false); 
     }
-  };
-
-  const updateStats = (trialsList: TrialData[]) => {
-    const total = trialsList.length;
-    const verified = trialsList.filter(t => t.isVerified).length;
-    const avgAge = total > 0 ? trialsList.reduce((sum, t) => sum + t.age, 0) / total : 0;
-    
-    setStats({ total, verified, avgAge });
   };
 
   const createTrial = async () => {
@@ -165,9 +158,9 @@ const App: React.FC = () => {
         newTrialData.name,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        ageValue,
-        0,
-        newTrialData.condition
+        parseInt(newTrialData.condition) || 0,
+        parseInt(newTrialData.phase) || 0,
+        newTrialData.description
       );
       
       setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
@@ -180,7 +173,7 @@ const App: React.FC = () => {
       
       await loadData();
       setShowCreateModal(false);
-      setNewTrialData({ name: "", age: "", condition: "", treatment: "" });
+      setNewTrialData({ name: "", age: "", condition: "", phase: "", description: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
         ? "Transaction rejected by user" 
@@ -199,6 +192,7 @@ const App: React.FC = () => {
       return null; 
     }
     
+    setIsDecrypting(true);
     try {
       const contractRead = await getContractReadOnly();
       if (!contractRead) return null;
@@ -206,14 +200,8 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ 
-          visible: true, 
-          status: "success", 
-          message: "Data already verified on-chain" 
-        });
-        setTimeout(() => {
-          setTransactionStatus({ visible: false, status: "pending", message: "" });
-        }, 2000);
+        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
+        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
         return storedValue;
       }
       
@@ -236,113 +224,87 @@ const App: React.FC = () => {
       await loadData();
       
       setTransactionStatus({ visible: true, status: "success", message: "Data decrypted and verified successfully!" });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
+      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
       
       return Number(clearValue);
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ 
-          visible: true, 
-          status: "success", 
-          message: "Data is already verified on-chain" 
-        });
-        setTimeout(() => {
-          setTransactionStatus({ visible: false, status: "pending", message: "" });
-        }, 2000);
+        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
+        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
         await loadData();
         return null;
       }
       
-      setTransactionStatus({ 
-        visible: true, 
-        status: "error", 
-        message: "Decryption failed: " + (e.message || "Unknown error") 
-      });
+      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
+    } finally { 
+      setIsDecrypting(false); 
     }
   };
 
-  const checkAvailability = async () => {
+  const testAvailability = async () => {
     try {
       const contract = await getContractReadOnly();
       if (!contract) return;
       
-      const available = await contract.isAvailable();
-      setTransactionStatus({ 
-        visible: true, 
-        status: "success", 
-        message: "Contract is available and ready" 
-      });
+      const isAvailable = await contract.isAvailable();
+      setTransactionStatus({ visible: true, status: "success", message: "Contract is available and working!" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
     } catch (e) {
-      setTransactionStatus({ 
-        visible: true, 
-        status: "error", 
-        message: "Availability check failed" 
-      });
+      setTransactionStatus({ visible: true, status: "error", message: "Contract test failed" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     }
   };
 
   const filteredTrials = trials.filter(trial => 
     trial.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    trial.condition.toLowerCase().includes(searchTerm.toLowerCase())
+    trial.description.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const renderStatsPanel = () => (
-    <div className="stats-panels">
-      <div className="stat-panel">
-        <div className="stat-icon">👥</div>
-        <div className="stat-content">
-          <div className="stat-value">{stats.total}</div>
-          <div className="stat-label">Total Participants</div>
-        </div>
+  const trialStats: TrialStats = {
+    totalTrials: trials.length,
+    verifiedPatients: trials.filter(t => t.isVerified).length,
+    avgCondition: trials.length > 0 ? trials.reduce((sum, t) => sum + t.conditionScore, 0) / trials.length : 0,
+    activeTrials: trials.filter(t => t.treatmentPhase > 0).length
+  };
+
+  const renderStats = () => (
+    <div className="stats-grid">
+      <div className="stat-card neon-purple">
+        <h3>Total Trials</h3>
+        <div className="stat-value">{trialStats.totalTrials}</div>
       </div>
-      
-      <div className="stat-panel">
-        <div className="stat-icon">✅</div>
-        <div className="stat-content">
-          <div className="stat-value">{stats.verified}</div>
-          <div className="stat-label">Verified Data</div>
-        </div>
+      <div className="stat-card neon-blue">
+        <h3>Verified Patients</h3>
+        <div className="stat-value">{trialStats.verifiedPatients}</div>
       </div>
-      
-      <div className="stat-panel">
-        <div className="stat-icon">📊</div>
-        <div className="stat-content">
-          <div className="stat-value">{stats.avgAge.toFixed(1)}</div>
-          <div className="stat-label">Average Age</div>
-        </div>
+      <div className="stat-card neon-pink">
+        <h3>Avg Condition</h3>
+        <div className="stat-value">{trialStats.avgCondition.toFixed(1)}</div>
+      </div>
+      <div className="stat-card neon-green">
+        <h3>Active Trials</h3>
+        <div className="stat-value">{trialStats.activeTrials}</div>
       </div>
     </div>
   );
 
-  const renderFHEProcess = () => (
-    <div className="fhe-process">
-      <div className="process-step">
-        <div className="step-number">1</div>
-        <div className="step-content">
-          <h4>Patient Enrollment</h4>
-          <p>Sensitive data encrypted with FHE before submission</p>
-        </div>
+  const renderFAQ = () => (
+    <div className="faq-section">
+      <h3>FHE Clinical Trials FAQ</h3>
+      <div className="faq-item">
+        <h4>What is FHE encryption?</h4>
+        <p>Fully Homomorphic Encryption allows computation on encrypted data without decryption, protecting patient privacy.</p>
       </div>
-      <div className="process-step">
-        <div className="step-number">2</div>
-        <div className="step-content">
-          <h4>Homomorphic Screening</h4>
-          <p>Pharma companies screen encrypted data without decryption</p>
-        </div>
+      <div className="faq-item">
+        <h4>How is my data protected?</h4>
+        <p>Patient ages are encrypted using Zama FHE and only decrypted with proper authorization and verification.</p>
       </div>
-      <div className="process-step">
-        <div className="step-number">3</div>
-        <div className="step-content">
-          <h4>Secure Verification</h4>
-          <p>Selective decryption with on-chain proof verification</p>
-        </div>
+      <div className="faq-item">
+        <h4>Who can access my data?</h4>
+        <p>Only authorized pharmaceutical researchers can perform homomorphic screening on encrypted data.</p>
       </div>
     </div>
   );
@@ -350,36 +312,20 @@ const App: React.FC = () => {
   if (!isConnected) {
     return (
       <div className="app-container">
-        <header className="app-header">
-          <div className="logo-section">
-            <h1>Confidential Clinical Trials 🔐</h1>
-            <p>Secure Patient Enrollment with FHE Protection</p>
+        <header className="app-header metal-header">
+          <div className="logo">
+            <h1>Confidential Clinical Trials 🔬</h1>
           </div>
-          <ConnectButton />
+          <div className="header-actions">
+            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          </div>
         </header>
         
-        <div className="welcome-section">
-          <div className="welcome-content">
-            <div className="welcome-icon">💊</div>
-            <h2>Privacy-First Clinical Trials</h2>
-            <p>Connect your wallet to participate in confidential clinical trials with fully homomorphic encryption protection.</p>
-            <div className="feature-grid">
-              <div className="feature-item">
-                <span className="feature-icon">🔒</span>
-                <h4>Encrypted Data</h4>
-                <p>Patient data remains encrypted throughout the process</p>
-              </div>
-              <div className="feature-item">
-                <span className="feature-icon">⚡</span>
-                <h4>Homomorphic Screening</h4>
-                <p>Pharma companies screen encrypted data directly</p>
-              </div>
-              <div className="feature-item">
-                <span className="feature-icon">🛡️</span>
-                <h4>Selective Access</h4>
-                <p>Controlled decryption with patient consent</p>
-              </div>
-            </div>
+        <div className="connection-prompt">
+          <div className="connection-content">
+            <div className="connection-icon">🔬</div>
+            <h2>Connect Your Wallet to Access Clinical Trials</h2>
+            <p>Secure, encrypted patient enrollment system powered by Zama FHE technology</p>
           </div>
         </div>
       </div>
@@ -389,174 +335,172 @@ const App: React.FC = () => {
   if (!isInitialized || fhevmInitializing) {
     return (
       <div className="loading-screen">
-        <div className="loading-spinner"></div>
-        <p>Initializing FHE Security System...</p>
+        <div className="fhe-spinner"></div>
+        <p>Initializing FHE Encryption System...</p>
       </div>
     );
   }
 
   if (loading) return (
     <div className="loading-screen">
-      <div className="loading-spinner"></div>
-      <p>Loading Clinical Trials Database...</p>
+      <div className="fhe-spinner"></div>
+      <p>Loading clinical trials system...</p>
     </div>
   );
 
   return (
     <div className="app-container">
-      <header className="app-header">
-        <div className="logo-section">
-          <h1>Confidential Clinical Trials 🔐</h1>
-          <p>FHE-Protected Patient Data Management</p>
+      <header className="app-header metal-header">
+        <div className="logo">
+          <h1>Confidential Clinical Trials 🔬</h1>
         </div>
         
         <div className="header-actions">
-          <button className="availability-btn" onClick={checkAvailability}>
-            Check System
+          <button onClick={testAvailability} className="test-btn">
+            Test Contract
           </button>
-          <ConnectButton />
+          <button onClick={() => setShowCreateModal(true)} className="create-btn">
+            + New Trial
+          </button>
+          <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
         </div>
       </header>
-
+      
+      <nav className="app-nav">
+        <button 
+          className={`nav-btn ${activeTab === "trials" ? "active" : ""}`}
+          onClick={() => setActiveTab("trials")}
+        >
+          Clinical Trials
+        </button>
+        <button 
+          className={`nav-btn ${activeTab === "stats" ? "active" : ""}`}
+          onClick={() => setActiveTab("stats")}
+        >
+          Statistics
+        </button>
+        <button 
+          className={`nav-btn ${activeTab === "faq" ? "active" : ""}`}
+          onClick={() => setActiveTab("faq")}
+        >
+          FAQ
+        </button>
+      </nav>
+      
       <main className="main-content">
-        <section className="dashboard-section">
-          <div className="section-header">
-            <h2>Clinical Trials Dashboard</h2>
-            <button 
-              className="create-trial-btn"
-              onClick={() => setShowCreateModal(true)}
-            >
-              + New Trial Enrollment
-            </button>
-          </div>
-          
-          {renderStatsPanel()}
-          
-          <div className="fhe-info-panel">
-            <h3>FHE Protection Process</h3>
-            {renderFHEProcess()}
-          </div>
-        </section>
-
-        <section className="trials-section">
-          <div className="section-toolbar">
-            <div className="search-box">
-              <input
-                type="text"
-                placeholder="Search trials or conditions..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-            <button 
-              className="refresh-btn"
-              onClick={loadData}
-              disabled={isRefreshing}
-            >
-              {isRefreshing ? "Refreshing..." : "Refresh Data"}
-            </button>
-          </div>
-
-          <div className="trials-grid">
-            {filteredTrials.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">💊</div>
-                <p>No clinical trials found</p>
-                <button 
-                  className="create-btn"
-                  onClick={() => setShowCreateModal(true)}
-                >
-                  Enroll First Patient
+        {activeTab === "trials" && (
+          <div className="trials-section">
+            <div className="section-header">
+              <h2>Active Clinical Trials</h2>
+              <div className="header-controls">
+                <input 
+                  type="text" 
+                  placeholder="Search trials..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="search-input"
+                />
+                <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
+                  {isRefreshing ? "Refreshing..." : "Refresh"}
                 </button>
               </div>
-            ) : (
-              filteredTrials.map((trial) => (
+            </div>
+            
+            <div className="trials-list">
+              {filteredTrials.length === 0 ? (
+                <div className="no-trials">
+                  <p>No clinical trials found</p>
+                  <button onClick={() => setShowCreateModal(true)} className="create-btn">
+                    Create First Trial
+                  </button>
+                </div>
+              ) : filteredTrials.map((trial, index) => (
                 <div 
-                  key={trial.id}
-                  className={`trial-card ${trial.isVerified ? 'verified' : ''}`}
+                  className={`trial-item ${selectedTrial?.id === trial.id ? "selected" : ""}`} 
+                  key={index}
                   onClick={() => setSelectedTrial(trial)}
                 >
-                  <div className="card-header">
+                  <div className="trial-header">
                     <h3>{trial.name}</h3>
-                    <span className={`status-badge ${trial.isVerified ? 'verified' : 'pending'}`}>
-                      {trial.isVerified ? '✅ Verified' : '🔒 Encrypted'}
+                    <span className={`status-badge ${trial.isVerified ? "verified" : "pending"}`}>
+                      {trial.isVerified ? "✅ Verified" : "🔒 Encrypted"}
                     </span>
                   </div>
-                  
-                  <div className="card-content">
-                    <div className="info-row">
-                      <span>Age:</span>
-                      <strong>{trial.age} years</strong>
-                    </div>
-                    <div className="info-row">
-                      <span>Condition:</span>
-                      <span>{trial.condition}</span>
-                    </div>
-                    <div className="info-row">
-                      <span>Enrolled:</span>
-                      <span>{new Date(trial.timestamp * 1000).toLocaleDateString()}</span>
-                    </div>
+                  <div className="trial-meta">
+                    <span>Condition Score: {trial.conditionScore}/10</span>
+                    <span>Age: {trial.isVerified ? trial.decryptedValue : "🔒 FHE Encrypted"}</span>
                   </div>
-                  
-                  {trial.isVerified && trial.decryptedValue && (
-                    <div className="decrypted-info">
-                      <span>Decrypted Age: {trial.decryptedValue}</span>
-                    </div>
-                  )}
+                  <p className="trial-desc">{trial.description}</p>
+                  <div className="trial-footer">
+                    <span>Created: {new Date(trial.timestamp * 1000).toLocaleDateString()}</span>
+                    <span>By: {trial.creator.substring(0, 6)}...{trial.creator.substring(38)}</span>
+                  </div>
                 </div>
-              ))
-            )}
+              ))}
+            </div>
           </div>
-        </section>
+        )}
+        
+        {activeTab === "stats" && (
+          <div className="stats-section">
+            <h2>Clinical Trials Statistics</h2>
+            {renderStats()}
+            <div className="charts-section">
+              <h3>Patient Distribution</h3>
+              <div className="chart-placeholder">
+                <p>FHE-protected analytics visualization</p>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {activeTab === "faq" && (
+          <div className="faq-tab">
+            <h2>Frequently Asked Questions</h2>
+            {renderFAQ()}
+          </div>
+        )}
       </main>
-
+      
       {showCreateModal && (
-        <CreateTrialModal
-          onSubmit={createTrial}
-          onClose={() => setShowCreateModal(false)}
-          creating={creatingTrial}
-          trialData={newTrialData}
+        <ModalCreateTrial 
+          onSubmit={createTrial} 
+          onClose={() => setShowCreateModal(false)} 
+          creating={creatingTrial} 
+          trialData={newTrialData} 
           setTrialData={setNewTrialData}
           isEncrypting={isEncrypting}
         />
       )}
-
+      
       {selectedTrial && (
-        <TrialDetailModal
-          trial={selectedTrial}
-          onClose={() => setSelectedTrial(null)}
-          onDecrypt={() => decryptData(selectedTrial.id)}
-          isDecrypting={fheIsDecrypting}
+        <TrialDetailModal 
+          trial={selectedTrial} 
+          onClose={() => setSelectedTrial(null)} 
+          isDecrypting={isDecrypting || fheIsDecrypting} 
+          decryptData={() => decryptData(selectedTrial.id)}
         />
       )}
-
+      
       {transactionStatus.visible && (
-        <div className={`transaction-toast ${transactionStatus.status}`}>
-          <div className="toast-content">
-            <span className="toast-message">{transactionStatus.message}</span>
+        <div className="transaction-modal">
+          <div className="transaction-content">
+            <div className={`transaction-icon ${transactionStatus.status}`}>
+              {transactionStatus.status === "pending" && <div className="fhe-spinner"></div>}
+              {transactionStatus.status === "success" && "✓"}
+              {transactionStatus.status === "error" && "✗"}
+            </div>
+            <div className="transaction-message">{transactionStatus.message}</div>
           </div>
         </div>
       )}
-
-      <footer className="app-footer">
-        <div className="footer-content">
-          <p>Confidential Clinical Trials - Powered by FHE Technology</p>
-          <div className="footer-links">
-            <span>Privacy First</span>
-            <span>•</span>
-            <span>Secure Enrollment</span>
-            <span>•</span>
-            <span>Encrypted Screening</span>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 };
 
-const CreateTrialModal: React.FC<{
-  onSubmit: () => void;
-  onClose: () => void;
+const ModalCreateTrial: React.FC<{
+  onSubmit: () => void; 
+  onClose: () => void; 
   creating: boolean;
   trialData: any;
   setTrialData: (data: any) => void;
@@ -564,68 +508,99 @@ const CreateTrialModal: React.FC<{
 }> = ({ onSubmit, onClose, creating, trialData, setTrialData, isEncrypting }) => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setTrialData({ ...trialData, [name]: value });
+    if (name === 'age' || name === 'condition' || name === 'phase') {
+      const intValue = value.replace(/[^\d]/g, '');
+      setTrialData({ ...trialData, [name]: intValue });
+    } else {
+      setTrialData({ ...trialData, [name]: value });
+    }
   };
 
   return (
     <div className="modal-overlay">
-      <div className="modal-container">
+      <div className="create-trial-modal">
         <div className="modal-header">
-          <h2>New Patient Enrollment</h2>
-          <button className="close-btn" onClick={onClose}>×</button>
+          <h2>New Clinical Trial Enrollment</h2>
+          <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
-          <div className="encryption-notice">
-            <span className="encryption-icon">🔐</span>
-            <p>Patient age will be encrypted using FHE technology for privacy protection</p>
+          <div className="fhe-notice">
+            <strong>FHE 🔐 Patient Privacy Protection</strong>
+            <p>Patient age will be encrypted with Zama FHE technology</p>
           </div>
           
           <div className="form-group">
             <label>Patient Name *</label>
-            <input
-              type="text"
-              name="name"
-              value={trialData.name}
-              onChange={handleChange}
-              placeholder="Enter patient name..."
+            <input 
+              type="text" 
+              name="name" 
+              value={trialData.name} 
+              onChange={handleChange} 
+              placeholder="Enter patient name..." 
             />
           </div>
           
           <div className="form-group">
             <label>Age (FHE Encrypted) *</label>
-            <input
-              type="number"
-              name="age"
-              value={trialData.age}
-              onChange={handleChange}
-              placeholder="Enter patient age..."
-              min="1"
-              max="120"
+            <input 
+              type="number" 
+              name="age" 
+              value={trialData.age} 
+              onChange={handleChange} 
+              placeholder="Enter age..." 
+              min="0"
             />
-            <div className="field-note">Encrypted integer only</div>
+            <div className="data-type-label">🔐 FHE Encrypted Integer</div>
           </div>
           
           <div className="form-group">
-            <label>Medical Condition *</label>
-            <textarea
-              name="condition"
-              value={trialData.condition}
-              onChange={handleChange}
-              placeholder="Describe the medical condition..."
+            <label>Medical Condition Score (1-10) *</label>
+            <input 
+              type="number" 
+              min="1" 
+              max="10" 
+              name="condition" 
+              value={trialData.condition} 
+              onChange={handleChange} 
+              placeholder="Condition severity..." 
+            />
+            <div className="data-type-label">Public Data</div>
+          </div>
+          
+          <div className="form-group">
+            <label>Treatment Phase *</label>
+            <input 
+              type="number" 
+              min="0" 
+              max="10" 
+              name="phase" 
+              value={trialData.phase} 
+              onChange={handleChange} 
+              placeholder="Treatment phase..." 
+            />
+          </div>
+          
+          <div className="form-group">
+            <label>Medical Description *</label>
+            <textarea 
+              name="description" 
+              value={trialData.description} 
+              onChange={handleChange} 
+              placeholder="Enter medical condition description..." 
               rows={3}
             />
           </div>
         </div>
         
         <div className="modal-footer">
-          <button className="cancel-btn" onClick={onClose}>Cancel</button>
-          <button
+          <button onClick={onClose} className="cancel-btn">Cancel</button>
+          <button 
+            onClick={onSubmit} 
+            disabled={creating || isEncrypting || !trialData.name || !trialData.age || !trialData.condition} 
             className="submit-btn"
-            onClick={onSubmit}
-            disabled={creating || isEncrypting || !trialData.name || !trialData.age || !trialData.condition}
           >
-            {creating || isEncrypting ? "Encrypting and Submitting..." : "Enroll Patient"}
+            {creating || isEncrypting ? "Encrypting and Creating..." : "Create Trial Enrollment"}
           </button>
         </div>
       </div>
@@ -636,75 +611,79 @@ const CreateTrialModal: React.FC<{
 const TrialDetailModal: React.FC<{
   trial: TrialData;
   onClose: () => void;
-  onDecrypt: () => void;
   isDecrypting: boolean;
-}> = ({ trial, onClose, onDecrypt, isDecrypting }) => {
+  decryptData: () => Promise<number | null>;
+}> = ({ trial, onClose, isDecrypting, decryptData }) => {
+  const handleDecrypt = async () => {
+    if (trial.isVerified) return;
+    await decryptData();
+  };
+
   return (
     <div className="modal-overlay">
-      <div className="modal-container">
+      <div className="trial-detail-modal">
         <div className="modal-header">
-          <h2>Patient Trial Details</h2>
-          <button className="close-btn" onClick={onClose}>×</button>
+          <h2>Trial Patient Details</h2>
+          <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
-          <div className="detail-section">
-            <h3>Patient Information</h3>
-            <div className="detail-grid">
-              <div className="detail-item">
-                <span>Name:</span>
-                <strong>{trial.name}</strong>
+          <div className="trial-info">
+            <div className="info-row">
+              <span>Patient Name:</span>
+              <strong>{trial.name}</strong>
+            </div>
+            <div className="info-row">
+              <span>Creator:</span>
+              <strong>{trial.creator.substring(0, 6)}...{trial.creator.substring(38)}</strong>
+            </div>
+            <div className="info-row">
+              <span>Date Created:</span>
+              <strong>{new Date(trial.timestamp * 1000).toLocaleDateString()}</strong>
+            </div>
+            <div className="info-row">
+              <span>Condition Score:</span>
+              <strong>{trial.conditionScore}/10</strong>
+            </div>
+          </div>
+          
+          <div className="data-section">
+            <h3>Encrypted Patient Data</h3>
+            
+            <div className="data-row">
+              <div className="data-label">Patient Age:</div>
+              <div className="data-value">
+                {trial.isVerified ? 
+                  `${trial.decryptedValue} (On-chain Verified)` : 
+                  "🔒 FHE Encrypted Integer"
+                }
               </div>
-              <div className="detail-item">
-                <span>Age:</span>
-                <strong>
-                  {trial.isVerified ? 
-                    `${trial.decryptedValue} (Decrypted)` : 
-                    "🔒 FHE Encrypted"
-                  }
-                </strong>
-              </div>
-              <div className="detail-item">
-                <span>Condition:</span>
-                <span>{trial.condition}</span>
-              </div>
-              <div className="detail-item">
-                <span>Enrollment Date:</span>
-                <span>{new Date(trial.timestamp * 1000).toLocaleDateString()}</span>
+              <button 
+                className={`decrypt-btn ${trial.isVerified ? 'verified' : ''}`}
+                onClick={handleDecrypt} 
+                disabled={isDecrypting || trial.isVerified}
+              >
+                {isDecrypting ? "🔓 Verifying..." : trial.isVerified ? "✅ Verified" : "🔓 Verify Age"}
+              </button>
+            </div>
+            
+            <div className="fhe-info">
+              <div className="fhe-icon">🔬</div>
+              <div>
+                <strong>FHE Clinical Trial Protection</strong>
+                <p>Patient age is encrypted on-chain using Zama FHE technology for privacy-preserving medical research.</p>
               </div>
             </div>
           </div>
           
-          <div className="encryption-section">
-            <h3>Data Security Status</h3>
-            <div className={`security-status ${trial.isVerified ? 'verified' : 'encrypted'}`}>
-              <div className="status-icon">
-                {trial.isVerified ? '✅' : '🔐'}
-              </div>
-              <div className="status-info">
-                <h4>{trial.isVerified ? 'Data Verified' : 'FHE Encrypted'}</h4>
-                <p>
-                  {trial.isVerified ? 
-                    'Patient age has been decrypted and verified on-chain' : 
-                    'Patient age is encrypted using FHE technology'
-                  }
-                </p>
-              </div>
-            </div>
+          <div className="description-section">
+            <h3>Medical Description</h3>
+            <p>{trial.description}</p>
           </div>
         </div>
         
         <div className="modal-footer">
-          <button className="close-btn" onClick={onClose}>Close</button>
-          {!trial.isVerified && (
-            <button
-              className="decrypt-btn"
-              onClick={onDecrypt}
-              disabled={isDecrypting}
-            >
-              {isDecrypting ? "Decrypting..." : "Verify Decryption"}
-            </button>
-          )}
+          <button onClick={onClose} className="close-btn">Close</button>
         </div>
       </div>
     </div>
